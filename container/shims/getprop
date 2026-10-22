@@ -1,0 +1,11 @@
+#!/bin/sh
+# Minimal getprop for running Magisk's boot_patch.sh on a PC: answers as an
+# arm64 device on a recent Android; every other property is empty.
+case "$1" in
+    ro.product.cpu.abi) echo "arm64-v8a" ;;
+    ro.product.cpu.abilist) echo "arm64-v8a,armeabi-v7a,armeabi" ;;
+    ro.product.cpu.abilist32) echo "armeabi-v7a,armeabi" ;;
+    ro.product.cpu.abilist64) echo "arm64-v8a" ;;
+    ro.build.version.sdk) echo "37" ;;
+    *) echo "" ;;
+esac

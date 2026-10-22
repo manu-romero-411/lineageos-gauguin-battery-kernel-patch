@@ -1,0 +1,26 @@
+# Build artefacts and caches (kernel clone, toolchains, ccache, outputs)
+/cache/
+/output/
+
+# Images and archives
+*.img
+*.zip
+*.apk
+*.tar.gz
+
+# Logs
+build.log
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pylint.d/
+.venv/
+venv/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -1,0 +1,3 @@
+#!/bin/sh
+# dos2unix as a stdin->stdout filter (used by Magisk util_functions.sh).
+exec sed 's/\r$//'
