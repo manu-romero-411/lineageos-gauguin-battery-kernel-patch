@@ -1,6 +1,6 @@
-# Build artefacts and caches (kernel clone, toolchains, ccache, outputs)
-/cache/
-/output/
+# Build work tree, caches and outputs
+/work/
+/out/
 
 # Images and archives
 *.img
@@ -9,7 +9,6 @@
 *.tar.gz
 
 # Logs
-build.log
 *.log
 
 # Python

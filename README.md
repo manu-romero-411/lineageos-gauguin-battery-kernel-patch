@@ -1,14 +1,25 @@
 # gauguin-bootfix
 
-Build, inside Docker, a `boot.img` for the **Xiaomi Mi 10T Lite / Redmi Note 9 Pro 5G
-(gauguin)** running **LineageOS 24 (Android 17)** with a kernel patched against the
-frozen battery percentage (`Charge counter: 0`) seen with non-original batteries
+Weekly-rebuilt `boot.img` files for the **Xiaomi Mi 10T Lite / Redmi Note 9 Pro 5G
+(gauguin)** on **LineageOS**, with a kernel patched against the frozen battery
+percentage (`Charge counter: 0`) seen with non-original batteries
 ([LineageOS/issues#87](https://github.com/LineageOS/issues/issues/87),
-[#290](https://github.com/LineageOS/issues/issues/290)). Optionally, Magisk is patched
-into the image too, so you do not have to reinstall it after every update.
+[#290](https://github.com/LineageOS/issues/issues/290)).
+
+Everything is done by a GitHub Actions workflow: every Thursday it takes the newest
+official LineageOS nightly for gauguin, rebuilds its kernel with the fix and publishes
+two images as a release:
+
+| File | Content |
+| --- | --- |
+| `boot_<yyyymmdd>.img` | Stock LineageOS boot image, kernel swapped for the patched one. |
+| `boot-magisk_<yyyymmdd>.img` | The same image, patched with Magisk. |
+
+`<yyyymmdd>` is the date of the LineageOS nightly the images belong to, which is also
+the release tag. Only flash an image on that exact nightly.
 
 > **Unofficial and not affiliated with LineageOS.** Flashing a custom `boot.img` is at
-> your own risk. Keep your stock `boot.img` as a way back.
+> your own risk. Keep the stock `boot.img` of your build as a way back.
 
 ## The fix
 
@@ -18,120 +29,94 @@ With a non-OEM battery that never succeeds and the reported percentage freezes. 
 patch forces `chip->batterysecret_support = false`, so every battery goes through the
 regular profile lookup by battery ID resistance.
 
-The patch step **fails loudly** if the assignment is not found, instead of silently
-building an unpatched kernel. The fix itself comes from
-[pocarropa/gauguin-kernel-builder-LOS](https://github.com/pocarropa/gauguin-kernel-builder-LOS);
-this project reuses it and adds the boot image and Magisk handling.
+The build **fails loudly** if the assignment is not found, instead of publishing an
+unpatched kernel. The fix itself comes from
+[pocarropa/gauguin-kernel-builder-LOS](https://github.com/pocarropa/gauguin-kernel-builder-LOS).
 
 It only helps if your problem is the one above. With an original battery you do not need it.
 
-## What it does
+## How the images are built
 
-1. Clones (shallow, cached) `LineageOS/android_kernel_xiaomi_gauguin`, branch `lineage-24.0`.
-2. Applies the battery fix, then any `patches/*.patch` (sorted, via `git apply`).
-3. Builds the kernel with the AOSP clang (r416183b) and GCC 4.9 toolchains, using the
-   **kernel config embedded in your stock kernel** (IKCONFIG), so it matches the build
-   LineageOS shipped. `--defconfig` forces a defconfig instead.
-4. Pins the kernel release string to the stock one (including the `-g<hash>` suffix) so
-   vendor modules keep loading (vermagic).
-5. Swaps the kernel inside a stock `boot.img` with `magiskboot`; the dtb and everything
-   else are kept.
-6. With `--magisk`: runs the Magisk APK's own `boot_patch.sh` on the host.
+1. The [LineageOS download API](https://download.lineageos.org/devices/gauguin) gives the
+   newest nightly. Its `boot.img` is downloaded (or extracted from the update zip /
+   `payload.bin` when not published separately) and its SHA-256 checked.
+2. The kernel source is `LineageOS/android_kernel_xiaomi_gauguin`, branch
+   `lineage-<version of the nightly>`, at **the commit the nightly was built from**: the
+   `-g<hash>` at the end of the stock kernel release identifies it. Failing that, the
+   last commit before the nightly's build time is used.
+3. The battery fix and any `patches/*.patch` (sorted, via `git apply`) are applied.
+4. The kernel is built with the AOSP clang (r416183b) and GCC 4.9 toolchains using the
+   **config embedded in the stock kernel** (IKCONFIG), so it matches the build LineageOS
+   shipped. The kernel release string is pinned to the stock one so vendor modules keep
+   loading (vermagic).
+5. `magiskboot` swaps the kernel inside the stock `boot.img`; the dtb, ramdisk and
+   everything else are kept → `boot_<date>.img`.
+6. Magisk's own `boot_patch.sh` patches a copy → `boot-magisk_<date>.img`. The newest
+   Magisk release is used, **pre-releases (betas) included**.
 
-## Requirements
+Everything else in the images is upstream LineageOS.
 
-- Docker (or Podman with `--engine podman`) and Python 3 on the host.
-- Several GB of free disk for the toolchains and the build cache (`cache/`).
-- A **stock, unpatched** LineageOS `boot.img` or the LineageOS update zip.
-- For `--magisk`: your device's pre-init partition (see below).
+## Releases
 
-## Usage
+- The workflow runs on Thursdays at 05:17 UTC. If a release for the newest nightly
+  already exists, it does nothing.
+- It can be started by hand from the **Actions** tab (*Build boot images → Run
+  workflow*), optionally with a specific nightly date (`yyyymmdd`, must still be listed
+  by LineageOS) and *force* to rebuild and replace an existing release.
+- The release notes list the LineageOS build, kernel commit, kernel release, Magisk
+  version and the SHA-256 of both images.
+
+### Magisk pre-init device
+
+`boot_patch.sh` cannot detect Magisk's pre-init partition off the phone, so it is set
+in the workflow. The default is `sda30`. To change it, add a repository variable
+(*Settings → Secrets and variables → Actions → Variables*) named
+`MAGISK_PREINIT_DEVICE`. Get the right value from the phone (root):
 
 ```sh
-git clone https://github.com/<your-user>/gauguin-bootfix
-cd gauguin-bootfix
-
-# Patched kernel only, from a stock boot.img
-./build.py --boot boot.img
-
-# From the LineageOS update zip (boot.img or payload.bin inside)
-./build.py --zip lineage-24.0-YYYYMMDD-nightly-gauguin-signed.zip
-
-# Patched kernel + Magisk
-./build.py --zip lineage-24.0-...-signed.zip --magisk --preinit-device <partition>
+adb shell su -c 'magisk --preinit-device'
 ```
 
-Output, in `output/`:
+Keep the Magisk app on the phone at the same version as the one in the image (shown in
+the release notes).
 
-| File | Content |
-| --- | --- |
-| `boot-batteryfix.img` | Patched kernel, no Magisk. Always written. |
-| `boot-batteryfix-magisk.img` | Same, patched with Magisk (only with `--magisk`). |
-| `Image` (or `Image.gz-dtb`) | The built kernel. |
-
-### Magisk
-
-- By default the **newest release, pre-releases included** is used (the `-legacy` APK is
-  skipped). `--magisk-stable` ignores pre-releases; `--magisk-apk <file>` uses a specific
-  APK. Use the same version as the Magisk app installed on the phone.
-- `boot_patch.sh` cannot detect the pre-init partition on a PC, so `--preinit-device`
-  is **required** with `--magisk`. Get it from the phone (root):
-
-  ```sh
-  adb shell su -c 'magisk --preinit-device'
-  ```
-
-- Extra variables for `boot_patch.sh` can be passed with `--magisk-env KEY=VALUE`
-  (defaults: `KEEPVERITY=true`, `KEEPFORCEENCRYPT=true`, `PATCHVBMETAFLAG=false`).
-- If the Magisk step fails, `boot-batteryfix.img` is already written: patch it with the
-  Magisk app instead (Install → Select and patch a file).
-
-### Flashing
+## Flashing
 
 Test first with a temporary boot, which does not touch the partition:
 
 ```sh
 adb reboot bootloader
-fastboot boot output/boot-batteryfix-magisk.img
+fastboot boot boot-magisk_<yyyymmdd>.img
 ```
 
-Check that the kernel is yours and the hardware works:
+Check that the kernel is the patched one and the hardware works:
 
 ```sh
-adb shell cat /proc/version     # should mention bootfix@docker
+adb shell cat /proc/version     # should mention bootfix@github
 adb shell su -c 'magisk -v'
 ```
 
-Then flash it permanently, the way you usually flash your boot image:
+Then flash it permanently:
 
 ```sh
-fastboot flash boot output/boot-batteryfix-magisk.img
+fastboot flash boot boot-magisk_<yyyymmdd>.img
 ```
 
-**After every LineageOS update** the OTA overwrites `boot`: run the build again with the
-new zip. The cache makes rebuilds incremental.
+**After every LineageOS update** the OTA overwrites `boot`: flash the release matching
+the new nightly.
 
-## Options
+## Running the build elsewhere
 
-Options not listed as host options are forwarded to the container.
+The workflow only calls `scripts/bootfix.py`, which runs on any Debian/Ubuntu x86_64
+machine with the packages from the workflow's *Install build dependencies* step:
 
-| Option | Description |
-| --- | --- |
-| `--zip`, `--boot` | Stock LineageOS zip or `boot.img` (one is required). |
-| `--magisk` | Also produce a Magisk-patched image. |
-| `--magisk-apk`, `--magisk-stable` | Pick the Magisk APK / ignore pre-releases. |
-| `--preinit-device` | Magisk `PREINITDEVICE` (required with `--magisk`). |
-| `--magisk-env KEY=VALUE` | Extra environment for `boot_patch.sh` (repeatable). |
-| `--kernel-url`, `--kernel-ref` | Kernel repository and branch or commit (default `lineage-24.0`). |
-| `--defconfig` | Use this defconfig instead of the stock kernel's embedded config. |
-| `--kernel-target` | `make` target; auto-detected (`Image` or `Image.gz-dtb`). |
-| `--kcflags` | Extra `KCFLAGS`, e.g. `--kcflags=-Wno-error`. |
-| `--clang-ref`, `--clang-dir`, `--gcc-ref` | Toolchain sources. |
-| `--jobs` | Parallel jobs (default: CPU count). |
-| `--cache-dir`, `--output-dir`, `--engine` | Host paths and `docker`/`podman`. |
+```sh
+python3 scripts/bootfix.py latest                       # writes out/nightly.json
+python3 scripts/bootfix.py build --preinit-device sda30 # writes out/*.img
+```
 
-To build exactly the source of your installed build, pin `--kernel-ref` to its commit.
-The kernel release of your stock image is printed during the build.
+`build --help` lists the remaining options (`--kernel-ref`, `--defconfig`, `--kcflags`,
+`--magisk-stable`, `--magisk-apk`, toolchain refs, `--jobs`).
 
 ## Notes and limitations
 
@@ -140,24 +125,15 @@ The kernel release of your stock image is printed during the build.
   kernel panic, as found by pocarropa), so an `lz4_legacy` ramdisk is recompressed as gzip.
 - `CONFIG_FRAME_WARN` is set to 0: with `-Werror`, the AOSP clang used here trips over
   stack frame sizes (e.g. `sha3_256_hmac`) that LineageOS's compiler does not.
-- Magisk's `getprop` and `dos2unix` are replaced by small shims in `container/shims/`.
-- If the kernel lacks an embedded config, use `--defconfig` (for example
-  `vendor/lito-perf_defconfig`, a guess for this SoC family; unverified).
-
-## Status
-
-Tested on a Mi 10T Lite with LineageOS 24.0: the patched kernel boots, Wi-Fi works and
-Magisk v31.0 runs. Whether it fixes the battery freeze over time is still being
-evaluated.
+- Magisk's `getprop` and `dos2unix` are replaced by small shims in `scripts/shims/`.
+- Toolchains and ccache are kept in the Actions cache; GitHub drops caches unused for
+  7 days, so a weekly run may sometimes start cold (slower, same result).
 
 ## Layout
 
 ```
-build.py              host wrapper (builds the image, runs the container)
-container/
-  Dockerfile
-  bootfix.py          the whole pipeline
-  shims/getprop       Magisk helpers for running boot_patch.sh on a PC
-  shims/dos2unix
-patches/              extra *.patch files, applied after the battery fix
+.github/workflows/build.yml   weekly build and release
+scripts/bootfix.py            the whole pipeline (latest / build)
+scripts/shims/                getprop and dos2unix for running boot_patch.sh on a PC
+patches/                      extra *.patch files, applied after the battery fix
 ```

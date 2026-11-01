@@ -1,0 +1,129 @@
+name: Build boot images
+
+on:
+  schedule:
+    # Every Thursday at 05:17 UTC.
+    - cron: "17 5 * * 4"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "LineageOS nightly to build (yyyymmdd); empty = newest"
+        required: false
+        default: ""
+      force:
+        description: "Rebuild and replace the release if it already exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-boot
+  cancel-in-progress: false
+
+env:
+  DEVICE: gauguin
+  # Magisk pre-init partition of the phone (`magisk --preinit-device`).
+  # Override it with a repository variable named MAGISK_PREINIT_DEVICE.
+  PREINIT_DEVICE: ${{ vars.MAGISK_PREINIT_DEVICE || 'sda30' }}
+  CCACHE_DIR: ${{ github.workspace }}/work/ccache
+  CCACHE_MAXSIZE: 3G
+  CCACHE_COMPRESS: "true"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the newest LineageOS nightly
+        id: nightly
+        run: python3 scripts/bootfix.py latest --device "$DEVICE" --date "$DATE"
+        env:
+          DATE: ${{ inputs.date }}
+
+      - name: Check for an existing release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.nightly.outputs.date }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$FORCE" = "true" ]; then
+              echo "Release $TAG exists; it will be replaced."
+              echo "build=true" >> "$GITHUB_OUTPUT"
+              echo "replace=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::notice::Release $TAG already exists; nothing to do."
+              echo "build=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free disk space
+        if: steps.release.outputs.build == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Install build dependencies
+        if: steps.release.outputs.build == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio device-tree-compiler flex \
+            git kmod libelf-dev liblzma-dev libssl-dev lz4 python3 unzip xz-utils
+
+      - name: Install payload-dumper-go
+        if: steps.release.outputs.build == 'true' && steps.nightly.outputs.needs_payload == 'true'
+        run: |
+          go install github.com/ssut/payload-dumper-go@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Restore toolchains
+        if: steps.release.outputs.build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: work/toolchains
+          # Bump when DEFAULT_CLANG_REF / DEFAULT_GCC_REF change in bootfix.py.
+          key: toolchains-clang-r416183b-bd96dfe-gcc-android-12.1.0_r27
+
+      - name: Restore ccache
+        if: steps.release.outputs.build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: work/ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: ccache-
+
+      - name: Build boot images
+        id: build
+        if: steps.release.outputs.build == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/bootfix.py build --preinit-device "$PREINIT_DEVICE"
+          ccache -s
+
+      - name: Publish release
+        if: steps.release.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.nightly.outputs.date }}
+          ZIP: ${{ steps.nightly.outputs.zip_name }}
+          REPLACE: ${{ steps.release.outputs.replace }}
+        run: |
+          if [ "$REPLACE" = "true" ]; then
+            gh release delete "$TAG" --cleanup-tag --yes
+          fi
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG – $ZIP" \
+            --notes-file "${{ steps.build.outputs.notes }}" \
+            "${{ steps.build.outputs.boot }}" \
+            "${{ steps.build.outputs.boot_magisk }}"
