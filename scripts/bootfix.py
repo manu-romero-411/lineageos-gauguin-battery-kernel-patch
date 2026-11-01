@@ -807,7 +807,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                        help="ignore Magisk pre-releases (betas)")
     build.add_argument("--magisk-apk", type=Path, help="use this Magisk APK")
     build.set_defaults(func=cmd_build)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # Commands run in other directories (make inside the kernel tree, PATH
+    # entries), so every path given on the command line is made absolute.
+    for name, value in vars(args).items():
+        if isinstance(value, Path):
+            setattr(args, name, value.resolve())
+    return args
 
 
 def main() -> int:
