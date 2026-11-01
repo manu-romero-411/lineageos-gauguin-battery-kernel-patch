@@ -69,6 +69,10 @@ MAKE_VARS = [
     "CROSS_COMPILE_ARM32=arm-linux-androideabi-",
 ]
 
+# Files boot_patch.sh needs next to it (Magisk v31+ dropped stub.apk).
+MAGISK_REQUIRED = ("boot_patch.sh", "util_functions.sh", "magiskboot", "magiskinit",
+                   "magisk", "init-ld")
+
 MAGISK_DEFAULT_ENV = {
     "BOOTMODE": "true",
     "KEEPVERITY": "true",
@@ -630,31 +634,34 @@ def extract_magisk_tools(apk: Path, dest: Path) -> None:
     """Lay out the Magisk files the way ``boot_patch.sh`` expects them.
 
     ``magiskboot`` is the x86_64 build (runs on this host); everything that
-    ends up inside the ramdisk comes from the arm64-v8a build.
+    ends up inside the ramdisk comes from the arm64-v8a build.  Files only
+    older Magisk versions use (``stub.apk``, ``magisk32``) are copied when
+    present; the ones every version needs are checked afterwards.
     """
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
-    try:
-        with zipfile.ZipFile(apk) as archive:
-            names = set(archive.namelist())
+    with zipfile.ZipFile(apk) as archive:
+        names = set(archive.namelist())
 
-            def pull(member: str, name: str) -> None:
-                target = dest / name
-                with archive.open(member) as source, target.open("wb") as handle:
-                    shutil.copyfileobj(source, handle)
-                target.chmod(0o755)
+        def pull(member: str, name: str) -> None:
+            if member not in names:
+                return
+            target = dest / name
+            with archive.open(member) as source, target.open("wb") as handle:
+                shutil.copyfileobj(source, handle)
+            target.chmod(0o755)
 
-            for member in sorted(names):
-                match = re.fullmatch(r"lib/arm64-v8a/lib(.+)\.so", member)
-                if match and match.group(1) != "magiskboot":
-                    pull(member, match.group(1))
-            pull("lib/x86_64/libmagiskboot.so", "magiskboot")
-            if "lib/armeabi-v7a/libmagisk.so" in names:
-                pull("lib/armeabi-v7a/libmagisk.so", "magisk32")
-            for asset in ("boot_patch.sh", "util_functions.sh", "stub.apk"):
-                pull(f"assets/{asset}", asset)
-    except KeyError as err:
-        raise BuildError(f"Unexpected Magisk APK layout, missing {err}.") from err
+        for member in sorted(names):
+            match = re.fullmatch(r"lib/arm64-v8a/lib(.+)\.so", member)
+            if match and match.group(1) != "magiskboot":
+                pull(member, match.group(1))
+        pull("lib/x86_64/libmagiskboot.so", "magiskboot")
+        pull("lib/armeabi-v7a/libmagisk.so", "magisk32")
+        for asset in ("boot_patch.sh", "util_functions.sh", "stub.apk"):
+            pull(f"assets/{asset}", asset)
+    missing = [name for name in MAGISK_REQUIRED if not (dest / name).exists()]
+    if missing:
+        raise BuildError(f"Unexpected Magisk APK layout, missing {', '.join(missing)}.")
 
 
 def magisk_patch(tools: Path, boot: Path, output: Path, preinit_device: str) -> None:
